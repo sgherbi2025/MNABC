@@ -1,4 +1,4 @@
-class MNABC:
+class MNABCOptimizer:
     
     def __init__(self, func_id, SN, MaxFEs, limit, D,
                  alpha=0.7, hufs_ratio=0.2):
