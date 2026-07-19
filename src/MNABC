@@ -1,0 +1,113 @@
+class MNABC:
+    
+    def __init__(self, func_id, SN, MaxFEs, limit, D,
+                 alpha=0.7, hufs_ratio=0.2):
+        info = CEC2013_FUNCS[func_id]
+        self.fn        = info['fn']
+        self.f_opt     = info['f_opt']
+        self.lb, self.ub = info['bounds']
+        self.func_id   = func_id
+        self.SN        = SN
+        self.MaxFEs    = MaxFEs
+        self.limit     = limit
+        self.D         = D
+        self.alpha     = alpha
+        self.hufs_ratio= hufs_ratio
+
+    def _eval(self, x):
+        return float(self.fn(x))
+
+    def _fitness_val(self, fval):
+        return 1.0 / (1.0 + abs(fval - self.f_opt))
+
+    def _utility(self, pop, fvals):
+        fa = np.array([self._fitness_val(f) for f in fvals])
+        fa_range = fa.max() - fa.min()
+        fn = (fa - fa.min()) / (fa_range + 1e-10)
+        d = np.zeros(self.SN)
+        for i in range(self.SN):
+            di = np.linalg.norm(pop - pop[i], axis=1); di[i] = np.inf
+            d[i] = di.min()
+        d_range = d.max() - d.min()
+        dn = (d - d.min()) / (d_range + 1e-10)
+        return self.alpha * fn + (1 - self.alpha) * dn                
+
+    @staticmethod
+    def _safe_probs(utils):
+        s = np.sum(utils)
+        if not np.isfinite(s) or s < 1e-10:
+            n = len(utils); return np.full(n, 1.0/n)
+        pr = utils / s
+        return pr / pr.sum()
+
+    def _hufs(self, pop, fvals):
+        utils = self._utility(pop, fvals)
+        k     = max(1, int(self.SN * self.hufs_ratio))
+        idx   = np.argsort(utils)[::-1][:k]
+        return pop[idx], fvals[idx]
+
+    def _anchor_shift(self, pop, i, anchor, k_idx, fvals):
+        
+        jj = np.random.randint(self.D)
+        v  = pop[i].copy()
+        v[jj] = np.clip(
+            anchor[jj] + np.random.uniform(-1, 1) * (pop[i, jj] - pop[k_idx, jj]),
+            self.lb, self.ub)
+        return v
+
+    def run(self, seed=None):
+        if seed is not None: np.random.seed(seed)
+        lb, ub, D, SN = self.lb, self.ub, self.D, self.SN
+
+        pop   = np.random.uniform(lb, ub, (SN, D))
+        fvals = np.array([self._eval(x) for x in pop])
+        trial = np.zeros(SN, int)
+        best_val = fvals.min()
+        best_err = best_val - self.f_opt
+        NFE = SN
+        history = [best_err]
+
+        while NFE < self.MaxFEs:
+            hufs, hufs_fv = self._hufs(pop, fvals)
+            x_best = hufs[np.argmin(hufs_fv)]
+
+            for i in range(SN):
+                if NFE >= self.MaxFEs: break
+                anc = hufs[np.random.randint(len(hufs))]
+                k   = np.random.choice([j for j in range(SN) if j != i])
+                v   = self._anchor_shift(pop, i, anc, k, fvals)
+                fv  = self._eval(v)
+                NFE += 1
+                if fv <= fvals[i]: pop[i]=v; fvals[i]=fv; trial[i]=0
+                else: trial[i] += 1
+                if fv < best_val: best_val = fv
+
+            utils = self._utility(pop, fvals)
+            pr    = self._safe_probs(utils)
+            for _ in range(SN):
+                if NFE >= self.MaxFEs: break
+                i   = np.random.choice(SN, p=pr)
+                anc = hufs[np.random.randint(len(hufs))]
+                k   = np.random.choice([j for j in range(SN) if j != i])
+                v   = self._anchor_shift(pop, i, anc, k, fvals)
+                fv  = self._eval(v)
+                NFE += 1
+                if fv <= fvals[i]: pop[i]=v; fvals[i]=fv; trial[i]=0
+                else: trial[i] += 1
+                if fv < best_val: best_val = fv
+
+            for i in range(SN):
+                if NFE >= self.MaxFEs: break
+                if trial[i] > self.limit:
+                    r1,r2,r3,r4 = np.random.uniform(0,1,4)
+                    xr = pop[np.random.randint(SN)]
+                    pop[i] = np.clip(
+                        r1*x_best + r2*xr + r3*(lb + r4*(ub-lb)), lb, ub)
+                    fvals[i] = self._eval(pop[i])
+                    NFE += 1; trial[i] = 0
+                    if fvals[i] < best_val: best_val = fvals[i]
+
+            best_err = best_val - self.f_opt
+            history.append(max(0.0, best_err))
+
+        return max(0.0, best_val - self.f_opt), np.array(history)
